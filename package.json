@@ -1,0 +1,57 @@
+{
+  "name": "bezl",
+  "version": "0.0.1",
+  "description": "Add Device Frames to Mobile Screen Recordings",
+  "bin": {
+    "bezl": "./bin/bezl.js"
+  },
+  "main": "./src/cli.js",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "changeset": "changeset",
+    "version": "changeset version",
+    "release": "changeset publish"
+  },
+  "dependencies": {
+    "chalk": "^4.1.2",
+    "commander": "^12.1.0",
+    "ora": "^5.4.1",
+    "sharp": "^0.33.5"
+  },
+  "devDependencies": {
+    "@changesets/changelog-github": "^0.5.0",
+    "@changesets/cli": "^2.27.0"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "README.md"
+  ],
+  "keywords": [
+    "device-frame",
+    "screenshot",
+    "video",
+    "android",
+    "ios",
+    "cli"
+  ],
+  "author": "David Amunga <david@davidamunga.com>",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/davidamunga/bezl.git"
+  },
+  "bugs": {
+    "url": "https://github.com/davidamunga/bezl/issues"
+  },
+  "homepage": "https://github.com/davidamunga/bezl#readme",
+  "packageManager": "pnpm@10.33.0+sha512.10568bb4a6afb58c9eb3630da90cc9516417abebd3fabbe6739f0ae795728da1491e9db5a544c76ad8eb7570f5c4bb3d6c637b2cb41bfdcdb47fa823c8649319",
+  "pnpm": {
+    "onlyBuiltDependencies": ["sharp"]
+  }
+}
