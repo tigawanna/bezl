@@ -1,7 +1,7 @@
 class Bezl < Formula
   desc "Add device frames to device screen recordings"
   homepage "https://github.com/davidamunga/bezl"
-  url "https://registry.npmjs.org/bezl/-/bezl-VERSION.tgz"
+  url "https://registry.npmjs.org/@damunga/bezl/-/bezl-VERSION.tgz"
   sha256 "SHA256_PLACEHOLDER"
   license "MIT"
   version "VERSION"

@@ -69,7 +69,7 @@ jobs:
       - name: Compute npm tarball sha256 and update formula
         run: |
           VERSION=$(node -p "require('./package.json').version")
-          TARBALL_URL="https://registry.npmjs.org/bezl/-/bezl-${VERSION}.tgz"
+          TARBALL_URL="https://registry.npmjs.org/@damunga/bezl/-/bezl-${VERSION}.tgz"
 
           # Give npm CDN a moment to propagate
           sleep 20
