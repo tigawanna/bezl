@@ -19,27 +19,22 @@ jobs:
 
     outputs:
       published: ${{ steps.changesets.outputs.published }}
-      publishedPackages: ${{ steps.changesets.outputs.publishedPackages }}
 
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          # Needed for changesets to push to protected branches
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: pnpm/action-setup@v4
 
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           registry-url: https://registry.npmjs.org
           cache: pnpm
-          cache-dependency-path: bezl-lib/pnpm-lock.yaml
-
-      - name: Enable pnpm
-        run: corepack enable
 
       - name: Install dependencies
-        working-directory: bezl-lib
         run: pnpm install --frozen-lockfile
 
       # Creates a "Version Packages" PR when changesets exist,
@@ -48,8 +43,8 @@ jobs:
         id: changesets
         uses: changesets/action@v1
         with:
-          version: cd bezl-lib && pnpm changeset version
-          publish: cd bezl-lib && pnpm changeset publish
+          version: pnpm changeset version
+          publish: pnpm changeset publish
           commit: "chore: version packages"
           title: "chore: version packages"
           createGithubReleases: true
@@ -69,12 +64,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # Use a PAT so the push triggers CI on the new commit
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Compute npm tarball sha256 and update formula
         run: |
-          VERSION=$(node -p "require('./bezl-lib/package.json').version")
+          VERSION=$(node -p "require('./package.json').version")
           TARBALL_URL="https://registry.npmjs.org/bezl/-/bezl-${VERSION}.tgz"
 
           # Give npm CDN a moment to propagate

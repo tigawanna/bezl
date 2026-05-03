@@ -23,24 +23,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
           cache: pnpm
-          cache-dependency-path: bezl-lib/pnpm-lock.yaml
-
-      - name: Enable pnpm
-        run: corepack enable
 
       - name: Install dependencies
-        working-directory: bezl-lib
         run: pnpm install --frozen-lockfile
 
       - name: Verify CLI starts
-        working-directory: bezl-lib
         run: node bin/bezl.js --help
 
-  lint-commits:
+  validate-changesets:
     name: Validate changesets
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
@@ -49,19 +45,15 @@ jobs:
         with:
           fetch-depth: 0
 
+      - uses: pnpm/action-setup@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: pnpm
-          cache-dependency-path: bezl-lib/pnpm-lock.yaml
-
-      - name: Enable pnpm
-        run: corepack enable
 
       - name: Install dependencies
-        working-directory: bezl-lib
         run: pnpm install --frozen-lockfile
 
       - name: Check changeset present
-        working-directory: bezl-lib
         run: pnpm changeset status
