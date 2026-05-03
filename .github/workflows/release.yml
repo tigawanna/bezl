@@ -1,0 +1,112 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write
+
+    outputs:
+      published: ${{ steps.changesets.outputs.published }}
+      publishedPackages: ${{ steps.changesets.outputs.publishedPackages }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # Needed for changesets to push to protected branches
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+          cache: pnpm
+          cache-dependency-path: bezl-lib/pnpm-lock.yaml
+
+      - name: Enable pnpm
+        run: corepack enable
+
+      - name: Install dependencies
+        working-directory: bezl-lib
+        run: pnpm install --frozen-lockfile
+
+      # Creates a "Version Packages" PR when changesets exist,
+      # or publishes to npm + creates a GitHub Release when that PR is merged.
+      - name: Create release PR or publish
+        id: changesets
+        uses: changesets/action@v1
+        with:
+          version: cd bezl-lib && pnpm changeset version
+          publish: cd bezl-lib && pnpm changeset publish
+          commit: "chore: version packages"
+          title: "chore: version packages"
+          createGithubReleases: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  update-homebrew:
+    name: Update Homebrew formula
+    needs: release
+    runs-on: ubuntu-latest
+    if: needs.release.outputs.published == 'true'
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Use a PAT so the push triggers CI on the new commit
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute npm tarball sha256 and update formula
+        run: |
+          VERSION=$(node -p "require('./bezl-lib/package.json').version")
+          TARBALL_URL="https://registry.npmjs.org/bezl/-/bezl-${VERSION}.tgz"
+
+          # Give npm CDN a moment to propagate
+          sleep 20
+
+          curl -fsSL "$TARBALL_URL" -o bezl.tgz
+          SHA256=$(sha256sum bezl.tgz | cut -d' ' -f1)
+
+          cat > Formula/bezl.rb << FORMULA
+          class Bezl < Formula
+            desc "Add device frames to device screen recordings"
+            homepage "https://github.com/davidamunga/bezl"
+            url "${TARBALL_URL}"
+            sha256 "${SHA256}"
+            license "MIT"
+            version "${VERSION}"
+
+            depends_on "node"
+
+            def install
+              system "npm", "install", *std_npm_args
+              bin.install_symlink Dir["\#{libexec}/bin/*"]
+            end
+
+            test do
+              assert_match version.to_s, shell_output("\#{bin}/bezl --version 2>&1")
+            end
+          end
+          FORMULA
+
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add Formula/bezl.rb
+          git diff --cached --quiet || git commit -m "chore: update homebrew formula to v${VERSION}"
+          git push
