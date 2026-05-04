@@ -1,6 +1,6 @@
 {
   "name": "@damunga/bezl",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Add Device Frames to Mobile Screen Recordings",
   "bin": {
     "bezl": "./bin/bezl.js"

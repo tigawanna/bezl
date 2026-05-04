@@ -154,6 +154,7 @@ async function run(inputPath, options) {
 
   const encodeSpinner = ora('Encoding…').start();
   const scale   = parseFloat(options.scale || '1');
+  const speed   = parseFloat(options.speed || '1');
   const crf     = parseInt(options.crf || '18', 10);
   const preset  = options.preset || 'fast';
 
@@ -167,6 +168,7 @@ async function run(inputPath, options) {
       fps:      meta.fps,
       hasAudio: meta.hasAudio,
       scale,
+      speed,
       crf,
       preset,
       onProgress: ({ elapsed }) => {
@@ -201,6 +203,7 @@ const sharedOptions = (cmd) =>
     .option('-f, --frame <name>',    'Device frame to use (default: auto-detect)')
     .option('-c, --color <scheme>',  'Frame color: dark | light', 'dark')
     .option('-s, --scale <factor>',  'Output scale multiplier, e.g. 0.5 for half size', '1')
+    .option('--speed <factor>',      'Playback speed multiplier for the output, e.g. 1.2 for 20% faster', '1')
     .option('--crf <number>',        'libx264 quality: 0=lossless 51=worst (default: 18)', '18')
     .option('--preset <name>',       'libx264 preset (ignored when hardware encoding is used)', 'fast')
     .option('--force',               'Regenerate frame PNG even if cached');

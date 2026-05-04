@@ -20,6 +20,7 @@ const { spawn } = require('child_process');
  * @param {number}  opts.fps         – source video frame rate
  * @param {boolean} opts.hasAudio    – whether to copy audio
  * @param {number}  [opts.scale=1]   – output scale multiplier (0.5 = half size)
+ * @param {number}  [opts.speed=1]   – playback speed multiplier (e.g. 1.2 = 20% faster)
  * @param {number}  [opts.crf=18]    – H.264 CRF quality (0=lossless, 51=worst)
  * @param {string}  [opts.preset='fast'] – FFmpeg encoding preset
  * @param {function} [opts.onProgress]   – called with { percent, time } as encoding progresses
@@ -34,6 +35,7 @@ async function composite(opts) {
     fps,
     hasAudio,
     scale    = 1,
+    speed    = 1,
     crf      = 18,
     preset   = 'fast',
     onProgress,
@@ -76,11 +78,16 @@ async function composite(opts) {
   // eof_action=repeat keeps the frame PNG visible until the video stream ends.
   const overlayFrame = `[base][1:v]overlay=0:0:eof_action=repeat[framed]`;
 
-  // Step 3: optional rescale
-  const finalScale =
-    scale !== 1
-      ? `;[framed]scale=${outW}:${outH}:flags=lanczos[out]`
-      : `;[framed]copy[out]`;
+  // Step 3: optional rescale + optional speed-up (setpts=PTS/speed)
+  const speedSuffix = speed !== 1 ? `,setpts=PTS/${speed}` : '';
+  let finalScale;
+  if (scale !== 1) {
+    finalScale = `;[framed]scale=${outW}:${outH}:flags=lanczos${speedSuffix}[out]`;
+  } else if (speed !== 1) {
+    finalScale = `;[framed]setpts=PTS/${speed}[out]`;
+  } else {
+    finalScale = `;[framed]copy[out]`;
+  }
 
   const filterComplex = `${scaleAndPad};${overlayFrame}${finalScale}`;
 
@@ -92,7 +99,13 @@ async function composite(opts) {
   ];
 
   if (hasAudio) {
-    args.push('-map', '0:a?', '-c:a', 'copy');
+    args.push('-map', '0:a?');
+    if (speed !== 1) {
+      // atempo requires re-encoding; it does not support stream copy
+      args.push('-filter:a', `atempo=${speed}`, '-c:a', 'aac', '-b:a', '128k');
+    } else {
+      args.push('-c:a', 'copy');
+    }
   }
 
   args.push(

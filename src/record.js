@@ -1,4 +1,4 @@
-'use strict';
+"use strict";
 
 /**
  * Live recording mode — two source modes selectable via --scrcpy flag.
@@ -76,29 +76,37 @@
  *    Requires `scrcpy` to be installed (brew install scrcpy on macOS).
  */
 
-const { spawn, execFileSync, execFile } = require('child_process');
-const chalk = require('chalk');
-const ora   = require('ora');
+const { spawn, execFileSync, execFile } = require("child_process");
+const chalk = require("chalk");
+const ora = require("ora");
 
-const { FRAMES, autoDetect }               = require('./frames');
-const { getFramePng }                      = require('./frame-gen');
-const { listDevices, getDeviceDimensions } = require('./adb');
+const { FRAMES, autoDetect } = require("./frames");
+const { getFramePng } = require("./frame-gen");
+const { listDevices, getDeviceDimensions } = require("./adb");
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function die(msg) {
-  console.error(chalk.red('✖  ' + msg));
+  console.error(chalk.red("✖  " + msg));
   process.exit(1);
 }
 
 function ffplayAvailable() {
-  try { execFileSync('ffplay', ['-version'], { stdio: 'ignore' }); return true; }
-  catch { return false; }
+  try {
+    execFileSync("ffplay", ["-version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function scrcpyAvailable() {
-  try { execFileSync('scrcpy', ['--version'], { stdio: 'ignore' }); return true; }
-  catch { return false; }
+  try {
+    execFileSync("scrcpy", ["--version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -112,21 +120,34 @@ function scrcpyAvailable() {
  * (excluding -pix_fmt yuv420p which is always appended separately).
  */
 function chooseEncoder(preset, crf) {
-  if (process.platform === 'darwin') {
+  if (process.platform === "darwin") {
     try {
-      execFileSync('ffmpeg', [
-        '-f', 'lavfi', '-i', 'color=black:size=2x2:rate=1:duration=0.04',
-        '-c:v', 'h264_videotoolbox', '-f', 'null', '-',
-      ], { stdio: 'ignore' });
+      execFileSync(
+        "ffmpeg",
+        [
+          "-f",
+          "lavfi",
+          "-i",
+          "color=black:size=2x2:rate=1:duration=0.04",
+          "-c:v",
+          "h264_videotoolbox",
+          "-f",
+          "null",
+          "-",
+        ],
+        { stdio: "ignore" },
+      );
       return {
-        codec: 'h264_videotoolbox',
-        args:  ['-c:v', 'h264_videotoolbox', '-b:v', '8M', '-allow_sw', '1'],
+        codec: "h264_videotoolbox",
+        args: ["-c:v", "h264_videotoolbox", "-b:v", "8M", "-allow_sw", "1"],
       };
-    } catch { /* fall through */ }
+    } catch {
+      /* fall through */
+    }
   }
   return {
-    codec: 'libx264',
-    args:  ['-c:v', 'libx264', '-preset', preset, '-crf', String(crf)],
+    codec: "libx264",
+    args: ["-c:v", "libx264", "-preset", preset, "-crf", String(crf)],
   };
 }
 
@@ -143,8 +164,8 @@ function previewDisplaySize(frameWidth, frameHeight) {
   const maxH = 820;
   const scale = Math.min(1, maxH / frameHeight);
   return {
-    w: Math.round(frameWidth  * scale / 2) * 2,
-    h: Math.round(frameHeight * scale / 2) * 2,
+    w: Math.round((frameWidth * scale) / 2) * 2,
+    h: Math.round((frameHeight * scale) / 2) * 2,
   };
 }
 
@@ -166,57 +187,102 @@ function previewDisplaySize(frameWidth, frameHeight) {
  * On Linux, ffplay is spawned directly as a subprocess.
  */
 function startPreview(udpPort, windowTitle, frameSize) {
-  const udpUrl   = `udp://127.0.0.1:${udpPort}`;
-  const { w: dw, h: dh } = previewDisplaySize(frameSize.width, frameSize.height);
+  const udpUrl = `udp://127.0.0.1:${udpPort}`;
+  const { w: dw, h: dh } = previewDisplaySize(
+    frameSize.width,
+    frameSize.height,
+  );
 
-  if (process.platform === 'darwin') {
+  // Low-latency flags shared by both macOS and Linux ffplay invocations:
+  //   -fflags nobuffer  — discard input buffer so frames render immediately
+  //   -flags low_delay  — low-delay decoding mode
+  //   -framedrop        — drop frames when display falls behind real-time
+  //   -analyzeduration 0 / -probesize 32768 — skip the default 5 s stream
+  //                       analysis that adds startup latency
+  const lowLatencyFlags = [
+    "-fflags", "nobuffer",
+    "-flags", "low_delay",
+    "-framedrop",
+    "-analyzeduration", "0",
+    "-probesize", "32768",
+  ];
+
+  if (process.platform === "darwin") {
     // Escape single quotes for the shell script passed inside AppleScript
-    const safeSh  = (s) => s.replace(/'/g, "'\\''");
+    const safeSh = (s) => s.replace(/'/g, "'\\''");
     // Escape double quotes for the AppleScript string
-    const safeAs  = (s) => s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    const safeAs = (s) => s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 
     const shellCmd = [
-      'ffplay',
-      '-f', 'mpegts',
+      "ffplay",
+      "-fflags nobuffer",
+      "-flags low_delay",
+      "-framedrop",
+      "-analyzeduration 0",
+      "-probesize 32768",
+      "-f mpegts",
       `-window_title '${safeSh(windowTitle)}'`,
-      `-vf scale=${dw}:${dh}`,       // scale down to fit the screen
-      `-x ${dw} -y ${dh}`,           // fix the SDL window size
-      '-loglevel quiet',
+      `-vf scale=${dw}:${dh}`,
+      `-x ${dw} -y ${dh}`,
+      "-loglevel quiet",
       `'${safeSh(udpUrl)}'`,
-    ].join(' ');
+    ].join(" ");
 
     // Multi-expression osascript to set both the command AND the tab title.
     // "do script" returns the Terminal tab object; setting its custom title
     // overrides the default "ffplay" shown in the title bar.
-    execFile('osascript', [
-      '-e', 'tell application "Terminal"',
-      '-e', `  set t to do script "${safeAs(shellCmd)}; exit"`,
-      '-e', `  set custom title of t to "${safeAs(windowTitle)}"`,
-      '-e', 'end tell',
-    ], () => {}); // fire-and-forget
+    execFile(
+      "osascript",
+      [
+        "-e",
+        'tell application "Terminal"',
+        "-e",
+        `  set t to do script "${safeAs(shellCmd)}; exit"`,
+        "-e",
+        `  set custom title of t to "${safeAs(windowTitle)}"`,
+        "-e",
+        "end tell",
+      ],
+      () => {},
+    ); // fire-and-forget
 
     return () => {};
   }
 
   // Linux / other: direct subprocess
-  const proc = spawn('ffplay', [
-    '-f', 'mpegts',
-    '-window_title', windowTitle,
-    '-vf', `scale=${dw}:${dh}`,
-    '-x', String(dw), '-y', String(dh),
-    '-loglevel', 'quiet',
-    udpUrl,
-  ], { stdio: 'ignore' });
+  const proc = spawn(
+    "ffplay",
+    [
+      ...lowLatencyFlags,
+      "-f", "mpegts",
+      "-window_title", windowTitle,
+      "-vf", `scale=${dw}:${dh}`,
+      "-x", String(dw),
+      "-y", String(dh),
+      "-loglevel", "quiet",
+      udpUrl,
+    ],
+    { stdio: "ignore" },
+  );
 
-  return () => { try { proc.kill(); } catch { /* ignore */ } };
+  return () => {
+    try {
+      proc.kill();
+    } catch {
+      /* ignore */
+    }
+  };
 }
 
 /**
  * Build the FFmpeg filter graph.
  * Single-pad approach: avoids the double-pad FIFO bug where chaining two
  * pad filters causes FFmpeg to drop all video frames from a pipe source.
+ *
+ * When speed > 1 (e.g. 1.2), setpts=PTS/speed compresses timestamps so the
+ * video plays back faster.  Audio speed is handled separately with atempo.
  */
-function buildFilter(screen, frameSize, scale) {
+function buildFilter(screen, frameSize, scale, speed) {
   const { x: sx, y: sy, width: sw, height: sh } = screen;
   const { width: fw, height: fh } = frameSize;
 
@@ -228,10 +294,15 @@ function buildFilter(screen, frameSize, scale) {
   // (shortest=1 causes video loss when audio is also present in the pipe.)
   const overlay = `[base][1:v]overlay=0:0:eof_action=repeat[framed]`;
 
+  const speedSuffix = speed !== 1 ? `,setpts=PTS/${speed}` : "";
+
   if (scale !== 1) {
-    const outW = Math.round(fw * scale / 2) * 2;
-    const outH = Math.round(fh * scale / 2) * 2;
-    return `${scalePad};${overlay};[framed]scale=${outW}:${outH}:flags=lanczos[out]`;
+    const outW = Math.round((fw * scale) / 2) * 2;
+    const outH = Math.round((fh * scale) / 2) * 2;
+    return `${scalePad};${overlay};[framed]scale=${outW}:${outH}:flags=lanczos${speedSuffix}[out]`;
+  }
+  if (speed !== 1) {
+    return `${scalePad};${overlay};[framed]setpts=PTS/${speed}[out]`;
   }
   return `${scalePad};${overlay};[framed]copy[out]`;
 }
@@ -239,23 +310,24 @@ function buildFilter(screen, frameSize, scale) {
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function record(outputPath, options) {
-  const serial      = options.serial;
-  const scheme      = options.color  || 'dark';
-  const scale       = parseFloat(options.scale  || '1');
-  const crf         = parseInt(options.crf    || '18', 10);
-  const preset      = options.preset || 'fast';
+  const serial = options.serial;
+  const scheme = options.color || "dark";
+  const scale = parseFloat(options.scale || "1");
+  const speed = parseFloat(options.speed || "1");
+  const crf = parseInt(options.crf || "18", 10);
+  const preset = options.preset || "fast";
   const wantDisplay = options.display !== false;
-  const useScrcpy   = Boolean(options.scrcpy);
+  const useScrcpy = Boolean(options.scrcpy);
   const extraSrArgs = options.screenrecordArgs
     ? options.screenrecordArgs.trim().split(/\s+/)
     : [];
 
   if (useScrcpy && !scrcpyAvailable()) {
-    die('scrcpy not found. Install it: brew install scrcpy');
+    die("scrcpy not found. Install it: brew install scrcpy");
   }
 
   // ── Find device ───────────────────────────────────────────────
-  const devSpinner = ora('Looking for connected Android device…').start();
+  const devSpinner = ora("Looking for connected Android device…").start();
   let devices;
   try {
     devices = await listDevices();
@@ -265,7 +337,7 @@ async function record(outputPath, options) {
   }
   if (devices.length === 0) {
     devSpinner.fail(
-      'No Android device found. Connect a device and enable USB debugging.'
+      "No Android device found. Connect a device and enable USB debugging.",
     );
     process.exit(1);
   }
@@ -273,7 +345,7 @@ async function record(outputPath, options) {
   devSpinner.succeed(`Device: ${chosenSerial}`);
 
   // ── Device dimensions ─────────────────────────────────────────
-  const dimSpinner = ora('Reading device screen dimensions…').start();
+  const dimSpinner = ora("Reading device screen dimensions…").start();
   let dims;
   try {
     dims = await getDeviceDimensions(chosenSerial);
@@ -286,7 +358,7 @@ async function record(outputPath, options) {
   // ── Frame selection ───────────────────────────────────────────
   let frameKey = options.frame;
   if (frameKey) {
-    if (!FRAMES[frameKey]) die(`Unknown frame "${frameKey}". Run: phonebox --list`);
+    if (!FRAMES[frameKey]) die(`Unknown frame "${frameKey}". Run: bezl --list`);
     console.log(chalk.dim(`  Frame: ${FRAMES[frameKey].name} (specified)`));
   } else {
     frameKey = autoDetect(dims.width, dims.height);
@@ -294,15 +366,20 @@ async function record(outputPath, options) {
   }
 
   // ── Generate frame PNG ────────────────────────────────────────
-  const isRealFrame = FRAMES[frameKey].source === 'url';
+  const isRealFrame = FRAMES[frameKey].source === "url";
   const frameSpinner = ora(
-    isRealFrame ? 'Downloading device frame…' : 'Preparing device frame…'
+    isRealFrame ? "Downloading device frame…" : "Preparing device frame…",
   ).start();
   let framePng, frameSize, screen;
   try {
-    ({ pngPath: framePng, frameSize, screen } =
-      await getFramePng(frameKey, FRAMES[frameKey], scheme, options.force));
-    frameSpinner.succeed(`Frame ready (${frameSize.width}×${frameSize.height})`);
+    ({
+      pngPath: framePng,
+      frameSize,
+      screen,
+    } = await getFramePng(frameKey, FRAMES[frameKey], scheme, options.force));
+    frameSpinner.succeed(
+      `Frame ready (${frameSize.width}×${frameSize.height})`,
+    );
   } catch (err) {
     frameSpinner.fail(err.message);
     process.exit(1);
@@ -312,32 +389,31 @@ async function record(outputPath, options) {
   const showDisplay = wantDisplay && ffplayAvailable();
   if (wantDisplay && !showDisplay) {
     console.log(
-      chalk.yellow('  ⚠  ffplay not found — live preview disabled') +
-      chalk.dim(' (install ffplay to enable)')
+      chalk.yellow("  ⚠  ffplay not found — live preview disabled") +
+        chalk.dim(" (install ffplay to enable)"),
     );
-  }
-
-  // ── Preview UDP stream (only when display is on) ──────────────
-  let udpPort     = null;
-  let stopPreview = () => {};
-
-  if (showDisplay) {
-    udpPort = randomUdpPort();
-    stopPreview = startPreview(
-      udpPort,
-      `phonebox — ${FRAMES[frameKey].name} (live)`,
-      frameSize
-    );
-    // Give ffplay a moment to start listening before FFmpeg begins sending.
-    // UDP is fire-and-forget, so this is just a courtesy — no blocking on either end.
-    await new Promise(r => setTimeout(r, 800));
   }
 
   // ── Encoder selection ─────────────────────────────────────────
   const encoder = chooseEncoder(preset, crf);
 
   // ── Build FFmpeg invocation ───────────────────────────────────
-  const filter = buildFilter(screen, frameSize, scale);
+  const filter = buildFilter(screen, frameSize, scale, speed);
+
+  // ── Preview UDP stream (only when display is on) ──────────────
+  let udpPort = null;
+  let stopPreview = () => {};
+
+  if (showDisplay) {
+    udpPort = randomUdpPort();
+    stopPreview = startPreview(
+      udpPort,
+      `bezl — ${FRAMES[frameKey].name} (live)`,
+      frameSize,
+    );
+    // Give ffplay a moment to bind to the UDP port before we begin sending frames.
+    await new Promise((r) => setTimeout(r, 400));
+  }
 
   const teeOutputs = [`[f=mp4:movflags=+faststart]${outputPath}`];
   if (udpPort) teeOutputs.push(`[f=mpegts]udp://127.0.0.1:${udpPort}`);
@@ -345,129 +421,225 @@ async function record(outputPath, options) {
   const ffmpegArgs = [
     // Input: raw H.264 from ADB screenrecord, or MKV (video+audio) from scrcpy
     ...(useScrcpy
-      ? ['-f', 'matroska', '-i', 'pipe:0']
-      : ['-f', 'h264',     '-i', 'pipe:0']),
-    '-i', framePng,
-    '-filter_complex', filter,
-    '-map', '[out]',
+      ? ["-f", "matroska", "-i", "pipe:0"]
+      : ["-f", "h264", "-i", "pipe:0"]),
+    "-i",
+    framePng,
+    "-filter_complex",
+    filter,
+    "-map",
+    "[out]",
     // Audio passthrough — only present when using scrcpy on Android 11+
     // The '?' makes this a no-op when no audio stream exists.
-    '-map', '0:a?',
+    "-map",
+    "0:a?",
     ...encoder.args,
-    '-pix_fmt', 'yuv420p',
-    '-c:a', 'aac', '-b:a', '128k',
-    '-f', 'tee', teeOutputs.join('|'),
+    "-pix_fmt",
+    "yuv420p",
+    "-c:a",
+    "aac",
+    "-b:a",
+    "128k",
+    // Speed up audio to match video when --speed is set
+    ...(speed !== 1 ? ["-filter:a", `atempo=${speed}`] : []),
+    "-f",
+    "tee",
+    teeOutputs.join("|"),
   ];
 
   // ── Status output ─────────────────────────────────────────────
-  const audioNote = useScrcpy ? chalk.dim(' (audio via scrcpy)') : chalk.yellow(' (video only — use --scrcpy for audio)');
-  const encoderNote = chalk.dim(` [${encoder.codec}]`);
-
-  console.log('');
-  console.log(`  ${chalk.dim('Output:')}   ${outputPath}`);
-  console.log(`  ${chalk.dim('Audio:')}    ${useScrcpy ? 'enabled' + chalk.dim(' (Android 11+)') : 'disabled' + chalk.dim(' (--scrcpy to enable)')}`);
-  console.log(`  ${chalk.dim('Encoder:')}  ${encoder.codec}`);
-  if (showDisplay) {
-    console.log(`  ${chalk.dim('Preview:')}  live window opening…`);
+  console.log("");
+  console.log(`  ${chalk.dim("Output:")}   ${outputPath}`);
+  console.log(
+    `  ${chalk.dim("Audio:")}    ${useScrcpy ? "enabled" + chalk.dim(" (Android 11+)") : "disabled" + chalk.dim(" (--scrcpy to enable)")}`,
+  );
+  console.log(`  ${chalk.dim("Encoder:")}  ${encoder.codec}`);
+  if (speed !== 1) {
+    console.log(`  ${chalk.dim("Speed:")}    ${speed}×`);
   }
-  console.log('');
-  const stopHint = useScrcpy
-    ? chalk.dim('(no time limit with scrcpy)')
-    : chalk.dim('(screenrecord stops automatically after 3 min)');
-  console.log(chalk.yellow('  Press Ctrl+C to stop.') + ' ' + stopHint);
-  console.log('');
+  if (showDisplay) {
+    console.log(`  ${chalk.dim("Preview:")}  live window open`);
+  }
+  console.log("");
+  const stopHint = chalk.dim("(no time limit — press Ctrl+C to stop)");
+  console.log(chalk.yellow("  Press Ctrl+C to stop.") + " " + stopHint);
+  console.log("");
+
+  // ── Countdown (with static-frame preview feed) ────────────────
+  if (showDisplay) {
+    // While counting down, stream the device frame PNG as a static image so the
+    // preview window shows the frame layout before any live video arrives.
+    const { w: dw, h: dh } = previewDisplaySize(
+      frameSize.width,
+      frameSize.height,
+    );
+    const staticProc = spawn(
+      "ffmpeg",
+      [
+        "-loop",
+        "1",
+        "-framerate",
+        "25",
+        "-i",
+        framePng,
+        "-vf",
+        `scale=${dw}:${dh}`,
+        "-c:v",
+        "libx264",
+        "-preset",
+        "ultrafast",
+        "-pix_fmt",
+        "yuv420p",
+        "-f",
+        "mpegts",
+        "-loglevel",
+        "quiet",
+        `udp://127.0.0.1:${udpPort}`,
+      ],
+      { stdio: "ignore" },
+    );
+
+    // Let ffmpeg encode the first frames before the countdown ticks.
+    await new Promise((r) => setTimeout(r, 300));
+
+    for (let n = 3; n >= 1; n--) {
+      process.stdout.write(
+        `\r  ${chalk.yellow("◉")} ${chalk.bold(`Starting in ${n}…`)}   `,
+      );
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    process.stdout.write(
+      `\r  ${chalk.red("●")} ${chalk.bold("Recording…")}            \n\n`,
+    );
+
+    staticProc.kill();
+    // Brief gap so ffplay doesn't close when the static feed drops before live
+    // frames arrive from the real recording pipeline.
+    await new Promise((r) => setTimeout(r, 200));
+  }
 
   // ── Spawn source process ──────────────────────────────────────
 
-  let sourceProc;
-
-  if (useScrcpy) {
-    // scrcpy 3.x: --no-playback replaces --no-display
-    const scrcpyArgs = [
-      ...(chosenSerial ? ['-s', chosenSerial] : []),
-      '--no-playback',
-      '--record=-',
-      '--record-format=mkv',
-      '--video-codec=h264',
-      '--audio-source=output',
-      ...extraSrArgs,
-    ];
-    sourceProc = spawn('scrcpy', scrcpyArgs, {
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    sourceProc.stderr.on('data', () => {}); // suppress scrcpy's status logs
-  } else {
-    const adbArgs = [
-      ...(chosenSerial ? ['-s', chosenSerial] : []),
-      'exec-out',
-      'screenrecord',
-      '--output-format=h264',
-      ...extraSrArgs,
-      '/dev/stdout',
-    ];
-    sourceProc = spawn('adb', adbArgs, {
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    sourceProc.stderr.on('data', () => {});
-  }
-
   // FFmpeg: composite frame, encode (hardware if available), write via tee muxer
-  const ffmpegProc = spawn('ffmpeg', ffmpegArgs, {
-    stdio: ['pipe', 'ignore', 'pipe'],
+  const ffmpegProc = spawn("ffmpeg", ffmpegArgs, {
+    stdio: ["pipe", "ignore", "pipe"],
   });
 
-  sourceProc.stdout.pipe(ffmpegProc.stdin);
-  ffmpegProc.stdin.on('error', () => {});
-
-  const recSpinner = ora('Recording…').start();
+  ffmpegProc.stdin.on("error", () => {});
 
   // ── Lifecycle ─────────────────────────────────────────────────
 
-  const sourceDone = new Promise(resolve => {
-    sourceProc.on('close', resolve);
-    sourceProc.on('error', () => resolve(1));
-  });
-
-  const ffmpegDone = new Promise((resolve, reject) => {
-    let stderr = '';
-    ffmpegProc.stderr.on('data', c => { stderr += c.toString(); });
-    ffmpegProc.on('close', code => {
-      if (code === 0 || code === null) resolve();
-      else reject(new Error(
-        `FFmpeg exited with code ${code}:\n` +
-        stderr.trim().split('\n').slice(-5).join('\n')
-      ));
-    });
-    ffmpegProc.on('error', reject);
-  });
-
-  // Ctrl+C: stop source; FFmpeg drains remaining frames and closes the file
   let stopping = false;
-  process.on('SIGINT', () => {
-    if (stopping) return;
-    stopping = true;
-    recSpinner.text = 'Stopping recording…';
-    sourceProc.kill('SIGTERM');
-    stopPreview();
-  });
+
+  // sourceDone resolves once the final source process exits (either because the
+  // user pressed Ctrl+C, or because scrcpy ended on its own).
+  let sourceDone;
+
+  if (useScrcpy) {
+    // scrcpy has no time limit — a single process covers the whole session.
+    const scrcpyArgs = [
+      ...(chosenSerial ? ["-s", chosenSerial] : []),
+      "--no-playback",
+      "--record=-",
+      "--record-format=mkv",
+      "--video-codec=h264",
+      "--audio-source=output",
+      ...extraSrArgs,
+    ];
+    const sourceProc = spawn("scrcpy", scrcpyArgs, {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    sourceProc.stderr.on("data", () => {}); // suppress scrcpy's status logs
+    sourceProc.stdout.pipe(ffmpegProc.stdin);
+
+    sourceDone = new Promise((resolve) => {
+      sourceProc.on("close", resolve);
+      sourceProc.on("error", () => resolve(1));
+    });
+
+    process.on("SIGINT", () => {
+      if (stopping) return;
+      stopping = true;
+      process.stdout.write(
+        `\r  ${chalk.yellow("◎")} ${chalk.bold("Stopping…")}            \n`,
+      );
+      sourceProc.kill("SIGTERM");
+      stopPreview();
+    });
+  } else {
+    // ADB screenrecord has a hard 3-minute limit per invocation.
+    // Work around it by auto-restarting the process every time it exits with
+    // code 0 (= hit the time limit) and piping the new H.264 stream into the
+    // same FFmpeg stdin.  { end: false } keeps the stdin writable across
+    // restarts; we close it explicitly when the user stops the recording.
+    let currentProc = null;
+
+    sourceDone = new Promise((resolve) => {
+      function spawnScreenrecord() {
+        const adbArgs = [
+          ...(chosenSerial ? ["-s", chosenSerial] : []),
+          "exec-out",
+          "screenrecord",
+          "--output-format=h264",
+          ...extraSrArgs,
+          "/dev/stdout",
+        ];
+        currentProc = spawn("adb", adbArgs, {
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        currentProc.stderr.on("data", () => {});
+        // end:false — don't close ffmpegProc.stdin when this process ends
+        currentProc.stdout.pipe(ffmpegProc.stdin, { end: false });
+
+        currentProc.on("error", () => {
+          ffmpegProc.stdin.end();
+          resolve(1);
+        });
+        currentProc.on("close", (code) => {
+          if (!stopping && code === 0) {
+            // Hit the 3-minute limit — restart seamlessly.
+            // The new stream begins with fresh SPS/PPS headers so FFmpeg
+            // resyncs automatically; there may be a single dropped frame.
+            spawnScreenrecord();
+          } else {
+            // User stopped (SIGTERM) or unexpected error — finish up.
+            ffmpegProc.stdin.end();
+            resolve(code);
+          }
+        });
+      }
+
+      spawnScreenrecord();
+    });
+
+    process.on("SIGINT", () => {
+      if (stopping) return;
+      stopping = true;
+      process.stdout.write(
+        `\r  ${chalk.yellow("◎")} ${chalk.bold("Stopping…")}            \n`,
+      );
+      if (currentProc) currentProc.kill("SIGTERM");
+      stopPreview();
+    });
+  }
 
   await sourceDone;
-  recSpinner.succeed('Recording stopped. Finalizing output…');
+  console.log(`  ${chalk.dim("Recording stopped. Finalizing output…")}`);
 
   // Wait for FFmpeg to finish writing the file
-  const encSpinner = ora('Encoding remaining frames…').start();
+  const encSpinner = ora("Encoding remaining frames…").start();
   try {
     await ffmpegDone;
-    encSpinner.succeed('Done!');
+    encSpinner.succeed("Done!");
   } catch (err) {
-    encSpinner.fail('Encoding failed');
+    encSpinner.fail("Encoding failed");
     console.error(chalk.red(err.message));
     process.exit(1);
   }
 
-  console.log('');
-  console.log(chalk.green('✔') + '  ' + chalk.bold(outputPath));
-  console.log('');
+  console.log("");
+  console.log(chalk.green("✔") + "  " + chalk.bold(outputPath));
+  console.log("");
 }
 
 module.exports = { record };
