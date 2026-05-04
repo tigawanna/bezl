@@ -8,22 +8,68 @@ bezl recording.mp4
 # → recording-framed.mp4 with a Pixel 7 frame auto-detected
 ```
 
-## Requirements
+## Dependencies
 
-- **Node.js** ≥ 18
-- **FFmpeg** (with `ffprobe` and `ffplay`) — `brew install ffmpeg` on macOS
-- **ADB** — `brew install android-platform-tools` on macOS
-- **scrcpy** _(optional, for audio)_ — `brew install scrcpy`
+bezl relies on a few system tools. Install them before using bezl.
+
+### macOS (Homebrew)
+
+```bash
+# Required — video processing
+brew install ffmpeg
+
+# Required for `bezl record` — ADB device communication
+brew install android-platform-tools
+
+# Optional — enables audio capture on Android 11+ via `--scrcpy`
+brew install scrcpy
+```
+
+### Linux
+
+```bash
+# Required
+sudo apt install ffmpeg adb      # Debian/Ubuntu
+sudo dnf install ffmpeg android-tools  # Fedora
+
+# Optional
+sudo apt install scrcpy
+```
+
+### Node.js
+
+Node.js **18 or later** is required. Check your version with `node -v`.
+Install via [nodejs.org](https://nodejs.org) or `brew install node` on macOS.
+
+---
 
 ## Install
 
+### Global install (recommended)
+
 ```bash
-# From this directory
+npm install -g @damunga/bezl
+```
+
+Then run from anywhere:
+
+```bash
+bezl recording.mp4
+```
+
+### Run without installing
+
+```bash
+npx @damunga/bezl record recording.mp4
+```
+
+### From source
+
+```bash
+git clone https://github.com/davidamunga/bezl.git
+cd bezl
 npm install
 npm link          # makes `bezl` available globally
-
-# Or run directly
-node bin/bezl.js recording.mp4
 ```
 
 ## Usage
