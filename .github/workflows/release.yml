@@ -54,19 +54,19 @@ jobs:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   update-homebrew:
-    name: Update Homebrew formula
+    name: Update Homebrew tap
     needs: release
     runs-on: ubuntu-latest
     if: needs.release.outputs.published == 'true'
-    permissions:
-      contents: write
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Compute npm tarball sha256 and update formula
+      - name: Clone homebrew tap
+        run: |
+          git clone https://x-access-token:${{ secrets.HOMEBREW_TAP_TOKEN }}@github.com/davidamunga/homebrew-bezl.git tap
+
+      - name: Compute sha256 and update formula
         run: |
           VERSION=$(node -p "require('./package.json').version")
           TARBALL_URL="https://registry.npmjs.org/@damunga/bezl/-/bezl-${VERSION}.tgz"
@@ -77,9 +77,10 @@ jobs:
           curl -fsSL "$TARBALL_URL" -o bezl.tgz
           SHA256=$(sha256sum bezl.tgz | cut -d' ' -f1)
 
-          cat > Formula/bezl.rb << FORMULA
+          mkdir -p tap/Formula
+          cat > tap/Formula/bezl.rb << FORMULA
           class Bezl < Formula
-            desc "Add device frames to device screen recordings"
+            desc "Add device frames to mobile screen recordings"
             homepage "https://github.com/davidamunga/bezl"
             url "${TARBALL_URL}"
             sha256 "${SHA256}"
@@ -99,8 +100,9 @@ jobs:
           end
           FORMULA
 
+          cd tap
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git config user.name "github-actions[bot]"
           git add Formula/bezl.rb
-          git diff --cached --quiet || git commit -m "chore: update homebrew formula to v${VERSION}"
+          git diff --cached --quiet || git commit -m "chore: update formula to v${VERSION}"
           git push

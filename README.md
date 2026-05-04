@@ -45,22 +45,25 @@ Install via [nodejs.org](https://nodejs.org) or `brew install node` on macOS.
 
 ## Install
 
-### Global install (recommended)
+### Homebrew (macOS, recommended)
+
+```bash
+brew tap davidamunga/bezl
+brew install bezl
+```
+
+This also installs Node.js if you don't already have it. You still need `ffmpeg` and `adb` (see [Dependencies](#dependencies) above).
+
+### npm (global)
 
 ```bash
 npm install -g @damunga/bezl
 ```
 
-Then run from anywhere:
-
-```bash
-bezl recording.mp4
-```
-
 ### Run without installing
 
 ```bash
-npx @damunga/bezl record recording.mp4
+npx @damunga/bezl recording.mp4
 ```
 
 ### From source
@@ -162,7 +165,6 @@ FFmpeg  [same frame overlay + audio passthrough]
 
 **Limitations:**
 
-- ADB mode: max 3 minutes per recording, no audio
 - scrcpy mode: audio requires Android 11+ and scrcpy 2+, no time limit
 - Requires Android 5.0+ (API 21)
 

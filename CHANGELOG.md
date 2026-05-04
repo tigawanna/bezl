@@ -1,5 +1,11 @@
 # bezl
 
+## 0.0.4
+
+### Patch Changes
+
+- add homebrew tap update to ci
+
 ## 0.0.3
 
 ### Patch Changes
