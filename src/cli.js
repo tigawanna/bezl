@@ -1,6 +1,7 @@
 'use strict';
 
 const fs      = require('fs');
+const os      = require('os');
 const path    = require('path');
 const { program } = require('commander');
 const chalk   = require('chalk');
@@ -9,8 +10,10 @@ const ora     = require('ora');
 const { FRAMES, autoDetect } = require('./frames');
 const { getFramePng, CACHE_DIR } = require('./frame-gen');
 const { probe } = require('./probe');
-const { composite } = require('./composite');
+const { composite, compositeImage } = require('./composite');
 const { record } = require('./record');
+const { spawn } = require('child_process');
+const { listDevices, getDeviceDimensions } = require('./adb');
 
 const pkg = require('../package.json');
 
@@ -32,6 +35,12 @@ function defaultOutput(inputPath) {
   const base = path.basename(inputPath, ext);
   const dir  = path.dirname(inputPath);
   return path.join(dir, `${base}-framed${ext}`);
+}
+
+const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.webp']);
+
+function isImageFile(inputPath) {
+  return IMAGE_EXTS.has(path.extname(inputPath).toLowerCase());
 }
 
 // ─── List frames command ───────────────────────────────────────────────────────
@@ -75,6 +84,99 @@ function listFrames() {
       console.log(`  ${' '.repeat(18)}  ${chalk.dim(`Frame: ${fw}×${fh}  Screen area: ${screen.width}×${screen.height}`)}`);
       console.log('');
     }
+  }
+}
+
+// ─── Image action ─────────────────────────────────────────────────────────────
+
+async function runImage(inputPath, options) {
+  if (!fs.existsSync(inputPath)) {
+    die(`Input file not found: ${inputPath}`);
+  }
+
+  // Always output PNG — compositing with transparency requires lossless format.
+  const outputPath = options.output || (() => {
+    const base = path.basename(inputPath, path.extname(inputPath));
+    return path.join(path.dirname(inputPath), `${base}-framed.png`);
+  })();
+
+  // Use sharp to read image dimensions (no ffprobe needed).
+  let sharp;
+  try {
+    sharp = require('sharp');
+  } catch {
+    die('sharp is not installed. Run: npm install');
+  }
+
+  const dimSpinner = ora('Reading image dimensions…').start();
+  let meta;
+  try {
+    meta = await sharp(inputPath).metadata();
+    dimSpinner.succeed(`${meta.width}×${meta.height}`);
+  } catch (err) {
+    dimSpinner.fail(err.message);
+    process.exit(1);
+  }
+
+  // ── Select frame ────────────────────────────────────────────────
+  let frameKey = options.frame;
+  if (frameKey) {
+    if (!FRAMES[frameKey]) {
+      die(
+        `Unknown frame "${frameKey}". ` +
+        `Run ${chalk.cyan('bezl --list')} to see available frames.`
+      );
+    }
+    console.log(chalk.dim(`  Frame: ${FRAMES[frameKey].name} (specified)`));
+  } else {
+    frameKey = autoDetect(meta.width, meta.height);
+    console.log(
+      chalk.dim(`  Frame: ${FRAMES[frameKey].name} (auto-detected for ${meta.width}×${meta.height})`)
+    );
+  }
+
+  const frameDef = FRAMES[frameKey];
+  const scheme   = options.color || 'dark';
+
+  // ── Generate / fetch frame PNG ───────────────────────────────────
+  const isRealFrame = frameDef.source === 'url';
+  const frameSpinner = ora(
+    isRealFrame ? 'Downloading device frame…' : 'Preparing device frame…'
+  ).start();
+  let framePng, frameSize, screen, screenMaskPath;
+  try {
+    ({ pngPath: framePng, frameSize, screen, screenMaskPath } = await getFramePng(
+      frameKey,
+      frameDef,
+      scheme,
+      options.force,
+    ));
+    frameSpinner.succeed(`Frame ready (${frameSize.width}×${frameSize.height})`);
+  } catch (err) {
+    frameSpinner.fail(`Frame generation failed: ${err.message}`);
+    process.exit(1);
+  }
+
+  // ── Composite ───────────────────────────────────────────────────
+  console.log('');
+  console.log(`  ${chalk.dim('Input:')}   ${inputPath}`);
+  console.log(`  ${chalk.dim('Output:')}  ${outputPath}`);
+  console.log('');
+
+  const compSpinner = ora('Compositing…').start();
+  const scale = parseFloat(options.scale || '1');
+
+  try {
+    await compositeImage({ input: inputPath, framePng, screen, frameSize, output: outputPath, scale, screenMaskPath });
+    compSpinner.succeed('Done!');
+    console.log('');
+    console.log(chalk.green('✔') + '  ' + chalk.bold(outputPath));
+    console.log('');
+  } catch (err) {
+    compSpinner.fail('Compositing failed');
+    console.error('');
+    console.error(chalk.red(err.message));
+    process.exit(1);
   }
 }
 
@@ -128,9 +230,9 @@ async function run(inputPath, options) {
   const frameSpinner = ora(
     isRealFrame ? 'Downloading device frame…' : 'Preparing device frame…'
   ).start();
-  let framePng, frameSize, screen;
+  let framePng, frameSize, screen, screenMaskPath;
   try {
-    ({ pngPath: framePng, frameSize, screen } = await getFramePng(
+    ({ pngPath: framePng, frameSize, screen, screenMaskPath } = await getFramePng(
       frameKey,
       frameDef,
       scheme,
@@ -162,6 +264,7 @@ async function run(inputPath, options) {
     await composite({
       input:    inputPath,
       framePng,
+      screenMaskPath,
       screen,
       frameSize,
       output:   outputPath,
@@ -195,6 +298,133 @@ async function run(inputPath, options) {
   }
 }
 
+// ─── Screenshot action ────────────────────────────────────────────────────────
+
+async function runScreenshot(outputPath, options) {
+  const serial = options.serial;
+
+  // ── Find device ─────────────────────────────────────────────────
+  const devSpinner = ora('Looking for connected Android device…').start();
+  let devices;
+  try {
+    devices = await listDevices();
+  } catch (err) {
+    devSpinner.fail(err.message);
+    process.exit(1);
+  }
+  if (devices.length === 0) {
+    devSpinner.fail('No Android device found. Connect a device and enable USB debugging.');
+    process.exit(1);
+  }
+  const chosenSerial = serial || devices[0];
+  devSpinner.succeed(`Device: ${chosenSerial}`);
+
+  // ── Device dimensions (for frame auto-detection) ─────────────────
+  const dimSpinner = ora('Reading device screen dimensions…').start();
+  let dims;
+  try {
+    dims = await getDeviceDimensions(chosenSerial);
+    dimSpinner.succeed(`Screen: ${dims.width}×${dims.height}`);
+  } catch (err) {
+    dimSpinner.fail(err.message);
+    process.exit(1);
+  }
+
+  // ── Capture screenshot on device ─────────────────────────────────
+  // Use `adb exec-out screencap -p` which streams the PNG directly over
+  // the ADB connection — avoids sdcard write-permission issues on some devices.
+  const capSpinner = ora('Capturing screenshot…').start();
+  const tmpPath = path.join(os.tmpdir(), `.bezl-cap-${Date.now()}.png`);
+  try {
+    await new Promise((resolve, reject) => {
+      const args = [
+        ...(chosenSerial ? ['-s', chosenSerial] : []),
+        'exec-out', 'screencap', '-p',
+      ];
+      const proc = spawn('adb', args);
+      const chunks = [];
+      proc.stdout.on('data', (chunk) => chunks.push(chunk));
+      proc.stderr.on('data', () => {});
+      proc.on('close', (code) => {
+        if (code !== 0 || chunks.length === 0) {
+          return reject(new Error('screencap failed — is the device unlocked?'));
+        }
+        try {
+          fs.writeFileSync(tmpPath, Buffer.concat(chunks));
+          resolve();
+        } catch (err) {
+          reject(err);
+        }
+      });
+      proc.on('error', (err) => {
+        reject(err.code === 'ENOENT'
+          ? new Error('adb not found. Install: brew install android-platform-tools')
+          : err);
+      });
+    });
+    capSpinner.succeed('Screenshot captured');
+  } catch (err) {
+    capSpinner.fail(`Capture failed: ${err.message}`);
+    process.exit(1);
+  }
+
+  // ── Frame selection ──────────────────────────────────────────────
+  let frameKey = options.frame;
+  if (frameKey) {
+    if (!FRAMES[frameKey]) {
+      die(`Unknown frame "${frameKey}". Run ${chalk.cyan('bezl --list')} to see available frames.`);
+    }
+    console.log(chalk.dim(`  Frame: ${FRAMES[frameKey].name} (specified)`));
+  } else {
+    frameKey = autoDetect(dims.width, dims.height);
+    console.log(chalk.dim(`  Frame: ${FRAMES[frameKey].name} (auto-detected)`));
+  }
+
+  const frameDef = FRAMES[frameKey];
+  const scheme   = options.color || 'dark';
+
+  // ── Generate / fetch frame PNG ───────────────────────────────────
+  const isRealFrame = frameDef.source === 'url';
+  const frameSpinner = ora(
+    isRealFrame ? 'Downloading device frame…' : 'Preparing device frame…'
+  ).start();
+  let framePng, frameSize, screen, screenMaskPath;
+  try {
+    ({ pngPath: framePng, frameSize, screen, screenMaskPath } = await getFramePng(
+      frameKey, frameDef, scheme, options.force,
+    ));
+    frameSpinner.succeed(`Frame ready (${frameSize.width}×${frameSize.height})`);
+  } catch (err) {
+    frameSpinner.fail(`Frame generation failed: ${err.message}`);
+    fs.rmSync(tmpPath, { force: true });
+    process.exit(1);
+  }
+
+  // ── Composite ───────────────────────────────────────────────────
+  console.log('');
+  console.log(`  ${chalk.dim('Output:')}  ${outputPath}`);
+  console.log('');
+
+  const compSpinner = ora('Compositing…').start();
+  const scale = parseFloat(options.scale || '1');
+  try {
+    await compositeImage({ input: tmpPath, framePng, screen, frameSize, output: outputPath, scale, screenMaskPath });
+    compSpinner.succeed('Done!');
+  } catch (err) {
+    compSpinner.fail('Compositing failed');
+    console.error('');
+    console.error(chalk.red(err.message));
+    fs.rmSync(tmpPath, { force: true });
+    process.exit(1);
+  }
+
+  fs.rmSync(tmpPath, { force: true });
+
+  console.log('');
+  console.log(chalk.green('✔') + '  ' + chalk.bold(outputPath));
+  console.log('');
+}
+
 // ─── CLI setup ────────────────────────────────────────────────────────────────
 
 // Shared options used by both the default command and the record subcommand
@@ -217,12 +447,16 @@ program
 sharedOptions(
   program
     .command('process <input>', { isDefault: true })
-    .description('Add a device frame to an existing screen recording')
-    .option('-o, --output <path>', 'Output file path (default: <input>-framed.mp4)')
+    .description('Add a device frame to an existing screen recording or screenshot')
+    .option('-o, --output <path>', 'Output file path (default: <input>-framed.{mp4,png})')
     .option('--list',              'List available device frames and exit')
 ).action(async (inputPath, options) => {
   if (options.list) { listFrames(); return; }
-  await run(inputPath, options);
+  if (isImageFile(inputPath)) {
+    await runImage(inputPath, options);
+  } else {
+    await run(inputPath, options);
+  }
 });
 
 // ── record subcommand: live recording ─────────────────────────────────────────
@@ -245,6 +479,20 @@ sharedOptions(
   const outputPath = output || `recording-framed-${Date.now()}.mp4`;
   await record(outputPath, options);
 });
+
+// ── screenshot subcommand: capture + frame in one step ───────────────────────
+program
+  .command('screenshot [output]')
+  .description('Capture a screenshot from a connected Android device and add a device frame')
+  .option('--serial <id>',        'Target a specific device by ADB serial')
+  .option('-f, --frame <name>',   'Device frame to use (default: auto-detect)')
+  .option('-c, --color <scheme>', 'Frame color: dark | light', 'dark')
+  .option('-s, --scale <factor>', 'Output scale multiplier, e.g. 0.5 for half size', '1')
+  .option('--force',              'Regenerate frame PNG even if cached')
+  .action(async (output, options) => {
+    const outputPath = output || `screenshot-framed-${Date.now()}.png`;
+    await runScreenshot(outputPath, options);
+  });
 
 // ── Top-level --list shortcut (no subcommand required) ────────────────────────
 if (process.argv.includes('--list')) {

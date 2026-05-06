@@ -29,9 +29,13 @@ function cachePath(frameKey, scheme) {
   return path.join(CACHE_DIR, `${frameKey}-${scheme}.png`);
 }
 
+function maskCachePath(frameKey, scheme) {
+  return path.join(CACHE_DIR, `${frameKey}-${scheme}-mask.png`);
+}
+
 /**
  * Download a PNG from a URL and save it to dest.
- * Follows a single redirect if the server returns 301/302.
+ * Follows redirects until a 200 response is received.
  */
 function downloadPng(url, dest) {
   return new Promise((resolve, reject) => {
@@ -67,52 +71,67 @@ function downloadPng(url, dest) {
 }
 
 /**
- * Generate (or retrieve from cache) a frame PNG with a transparent screen hole.
+ * Build the screen clip mask from a frame PNG.
+ *
+ * The frame PNG has a transparent screen hole (alpha=0) and an opaque body
+ * (alpha=255). We derive a full-frame grayscale mask where the hole=255 and
+ * the body=0 by extracting and negating the alpha channel.
+ *
+ * This mask is used by FFmpeg (alphamerge) and Sharp (joinChannel) to clip
+ * video/screenshot content to the exact screen-hole shape — including the
+ * frame's native corner rounding — before compositing.
+ */
+async function buildScreenMask(framePngPath, maskPath) {
+  await sharp(framePngPath)
+    .extractChannel("alpha") // body=255, hole=0
+    .negate()                 // body=0,   hole=255 (show content here)
+    .toFile(maskPath);
+}
+
+/**
+ * Generate (or retrieve from cache) a frame PNG with a transparent screen hole,
+ * and its corresponding screen clip mask.
  *
  * Handles two frame source types:
  *   source: 'url' – download real device PNG from CDN, cache locally
- *   source: 'svg' – generate PNG from SVG using Sharp (original behaviour)
+ *   source: 'svg' – generate PNG from SVG using Sharp
  *
- * @param {string} frameKey   – key from FRAMES registry
- * @param {object} frameDef   – the frame definition object
- * @param {string} scheme     – 'dark' | 'light'
+ * @param {string}  frameKey  – key from FRAMES registry
+ * @param {object}  frameDef  – the frame definition object
+ * @param {string}  scheme    – 'dark' | 'light'
  * @param {boolean} force     – ignore cache and regenerate / re-download
- * @returns {Promise<{ pngPath, frameSize, screen }>}
+ * @returns {Promise<{ pngPath, frameSize, screen, screenMaskPath }>}
  */
 async function getFramePng(frameKey, frameDef, scheme = "dark", force = false) {
   ensureCache();
-  const dest = cachePath(frameKey, scheme);
+  const dest     = cachePath(frameKey, scheme);
+  const maskDest = maskCachePath(frameKey, scheme);
 
   if (frameDef.source === "url") {
     const colorDef = frameDef.colors[scheme] ?? frameDef.colors.dark;
 
     if (!force && fs.existsSync(dest)) {
-      return {
-        pngPath: dest,
-        frameSize: colorDef.frameSize,
-        screen: colorDef.screen,
-      };
+      if (!fs.existsSync(maskDest)) await buildScreenMask(dest, maskDest);
+      return { pngPath: dest, frameSize: colorDef.frameSize, screen: colorDef.screen, screenMaskPath: maskDest };
     }
 
     await downloadPng(colorDef.url, dest);
-    return {
-      pngPath: dest,
-      frameSize: colorDef.frameSize,
-      screen: colorDef.screen,
-    };
+    await buildScreenMask(dest, maskDest);
+    return { pngPath: dest, frameSize: colorDef.frameSize, screen: colorDef.screen, screenMaskPath: maskDest };
   }
 
-  // SVG-generated frame (original path)
+  // SVG-generated frame
   if (!force && fs.existsSync(dest)) {
+    if (!fs.existsSync(maskDest)) await buildScreenMask(dest, maskDest);
     const built = frameDef.build(scheme);
-    return { pngPath: dest, frameSize: built.frameSize, screen: built.screen };
+    return { pngPath: dest, frameSize: built.frameSize, screen: built.screen, screenMaskPath: maskDest };
   }
 
   const { svg, frameSize, screen } = frameDef.build(scheme);
-
   await sharp(Buffer.from(svg)).png().toFile(dest);
+  await buildScreenMask(dest, maskDest);
 
-  return { pngPath: dest, frameSize, screen };
+  return { pngPath: dest, frameSize, screen, screenMaskPath: maskDest };
 }
 
 module.exports = { getFramePng, CACHE_DIR };

@@ -83,6 +83,7 @@ const ora = require("ora");
 const { FRAMES, autoDetect } = require("./frames");
 const { getFramePng } = require("./frame-gen");
 const { listDevices, getDeviceDimensions } = require("./adb");
+const { chooseEncoder } = require("./encoder");
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -107,48 +108,6 @@ function scrcpyAvailable() {
   } catch {
     return false;
   }
-}
-
-/**
- * Detect the fastest available H.264 encoder.
- *
- * On macOS, h264_videotoolbox uses the hardware video encoder (Apple Silicon
- * or Intel QuickSync) and is 5-10× faster than software libx264. It doesn't
- * support CRF so we use a target bitrate (8 Mbps) instead.
- *
- * Returns { codec, args } where args are the encoder-specific FFmpeg flags
- * (excluding -pix_fmt yuv420p which is always appended separately).
- */
-function chooseEncoder(preset, crf) {
-  if (process.platform === "darwin") {
-    try {
-      execFileSync(
-        "ffmpeg",
-        [
-          "-f",
-          "lavfi",
-          "-i",
-          "color=black:size=2x2:rate=1:duration=0.04",
-          "-c:v",
-          "h264_videotoolbox",
-          "-f",
-          "null",
-          "-",
-        ],
-        { stdio: "ignore" },
-      );
-      return {
-        codec: "h264_videotoolbox",
-        args: ["-c:v", "h264_videotoolbox", "-b:v", "8M", "-allow_sw", "1"],
-      };
-    } catch {
-      /* fall through */
-    }
-  }
-  return {
-    codec: "libx264",
-    args: ["-c:v", "libx264", "-preset", preset, "-crf", String(crf)],
-  };
 }
 
 function randomUdpPort() {
@@ -282,29 +241,48 @@ function startPreview(udpPort, windowTitle, frameSize) {
  * When speed > 1 (e.g. 1.2), setpts=PTS/speed compresses timestamps so the
  * video plays back faster.  Audio speed is handled separately with atempo.
  */
+/**
+ * Build the FFmpeg filter graph for live recording.
+ *
+ * Input 0: raw video pipe (H.264 or MKV from ADB/scrcpy)
+ * Input 1: frame PNG   (RGBA, transparent screen hole)
+ * Input 2: screen mask (fw×fh grayscale: hole=255, body=0)
+ *
+ * Steps:
+ *   [0:v] scale to screen area → single pad to full frame → format=rgba → [padded]
+ *   [padded][2:v] alphamerge → clips video to the frame's screen-hole shape → [base]
+ *   [base][1:v]   overlay    → frame chrome on top → [framed]
+ *   [framed]      optional scale / speed / yuv420p → [out]
+ *
+ * Single pad only: avoids the double-pad frame-drop bug on pipe inputs.
+ */
 function buildFilter(screen, frameSize, scale, speed) {
   const { x: sx, y: sy, width: sw, height: sh } = screen;
   const { width: fw, height: fh } = frameSize;
 
   const scalePad =
     `[0:v]scale=${sw}:${sh}:force_original_aspect_ratio=decrease,` +
-    `pad=${fw}:${fh}:${sx}+(${sw}-iw)/2:${sy}+(${sh}-ih)/2[base]`;
+    `pad=${fw}:${fh}:${sx}+(${sw}-iw)/2:${sy}+(${sh}-ih)/2,format=rgba[padded]`;
+
+  const applyMask = `[padded][2:v]alphamerge[base]`;
 
   // eof_action=repeat: keep frame PNG visible until video stream ends.
-  // (shortest=1 causes video loss when audio is also present in the pipe.)
   const overlay = `[base][1:v]overlay=0:0:eof_action=repeat[framed]`;
 
   const speedSuffix = speed !== 1 ? `,setpts=PTS/${speed}` : "";
 
+  let finalStep;
   if (scale !== 1) {
     const outW = Math.round((fw * scale) / 2) * 2;
     const outH = Math.round((fh * scale) / 2) * 2;
-    return `${scalePad};${overlay};[framed]scale=${outW}:${outH}:flags=lanczos${speedSuffix}[out]`;
+    finalStep = `;[framed]scale=${outW}:${outH}:flags=lanczos${speedSuffix},format=yuv420p[out]`;
+  } else if (speed !== 1) {
+    finalStep = `;[framed]setpts=PTS/${speed},format=yuv420p[out]`;
+  } else {
+    finalStep = `;[framed]format=yuv420p[out]`;
   }
-  if (speed !== 1) {
-    return `${scalePad};${overlay};[framed]setpts=PTS/${speed}[out]`;
-  }
-  return `${scalePad};${overlay};[framed]copy[out]`;
+
+  return `${scalePad};${applyMask};${overlay}${finalStep}`;
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
@@ -370,12 +348,13 @@ async function record(outputPath, options) {
   const frameSpinner = ora(
     isRealFrame ? "Downloading device frame…" : "Preparing device frame…",
   ).start();
-  let framePng, frameSize, screen;
+  let framePng, frameSize, screen, screenMaskPath;
   try {
     ({
       pngPath: framePng,
       frameSize,
       screen,
+      screenMaskPath,
     } = await getFramePng(frameKey, FRAMES[frameKey], scheme, options.force));
     frameSpinner.succeed(
       `Frame ready (${frameSize.width}×${frameSize.height})`,
@@ -419,12 +398,14 @@ async function record(outputPath, options) {
   if (udpPort) teeOutputs.push(`[f=mpegts]udp://127.0.0.1:${udpPort}`);
 
   const ffmpegArgs = [
-    // Input: raw H.264 from ADB screenrecord, or MKV (video+audio) from scrcpy
+    // Input 0: raw H.264 from ADB screenrecord, or MKV (video+audio) from scrcpy
     ...(useScrcpy
       ? ["-f", "matroska", "-i", "pipe:0"]
       : ["-f", "h264", "-i", "pipe:0"]),
-    "-i",
-    framePng,
+    // Input 1: frame PNG
+    "-i", framePng,
+    // Input 2: screen clip mask (fw×fh grayscale: hole=255, body=0)
+    "-i", screenMaskPath,
     "-filter_complex",
     filter,
     "-map",
@@ -526,6 +507,31 @@ async function record(outputPath, options) {
   });
 
   ffmpegProc.stdin.on("error", () => {});
+
+  // Capture stderr so we can surface a useful message if FFmpeg exits non-zero.
+  let ffmpegStderrBuf = "";
+  ffmpegProc.stderr.on("data", (chunk) => {
+    ffmpegStderrBuf += chunk.toString();
+  });
+
+  // Resolves when FFmpeg finishes writing the output file.
+  const ffmpegDone = new Promise((resolve, reject) => {
+    ffmpegProc.on("close", (code) => {
+      if (code === 0 || code === null) {
+        resolve();
+      } else {
+        const tail = ffmpegStderrBuf.trim().split("\n").slice(-6).join("\n");
+        reject(new Error(`FFmpeg exited with code ${code}:\n${tail}`));
+      }
+    });
+    ffmpegProc.on("error", (err) => {
+      if (err.code === "ENOENT") {
+        reject(new Error("ffmpeg not found. Install FFmpeg: https://ffmpeg.org/download.html"));
+      } else {
+        reject(err);
+      }
+    });
+  });
 
   // ── Lifecycle ─────────────────────────────────────────────────
 
